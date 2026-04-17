@@ -235,3 +235,107 @@ def get_unscored_jobs(limit: int = 50) -> List[Dict[str, Any]]:
                 d[k] = float(v)
         out.append(d)
     return out
+
+
+def get_job_by_id(job_id: int) -> Optional[Dict[str, Any]]:
+    """Return a single job row or ``None``."""
+    sql = text(
+        """
+        SELECT id, title, company, url, description, source, found_at,
+               fit_score, recommendation, location
+        FROM jobs
+        WHERE id = :jid
+        """
+    )
+    with connection() as conn:
+        row = conn.execute(sql, {"jid": int(job_id)}).mappings().first()
+    if row is None:
+        return None
+    d = dict(row)
+    for k, v in list(d.items()):
+        if hasattr(v, "isoformat"):
+            d[k] = v.isoformat()
+        elif k == "fit_score" and v is not None:
+            d[k] = float(v)
+    return d
+
+
+def get_latest_candidate_profile() -> Optional[Dict[str, Any]]:
+    """Most recent ``candidates`` row as a profile dict (JSONB lists decoded)."""
+    sql = text(
+        """
+        SELECT name, email, phone, location, skills, experience_years, seniority,
+               target_roles, education, visa_status, salary_min,
+               preferred_locations, industries, summary
+        FROM candidates
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    with connection() as conn:
+        row = conn.execute(sql).mappings().first()
+    if row is None:
+        return None
+
+    def _jsonish(val: Any) -> Any:
+        if val is None:
+            return []
+        if isinstance(val, (list, dict)):
+            return val
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except json.JSONDecodeError:
+                return []
+        return val
+
+    d = dict(row)
+    for key in ("skills", "target_roles", "education", "preferred_locations", "industries"):
+        d[key] = _jsonish(d.get(key))
+
+    ey = d.get("experience_years")
+    if ey is not None:
+        try:
+            d["experience_years"] = int(round(float(ey)))
+        except (TypeError, ValueError):
+            d["experience_years"] = 0
+
+    sm = d.get("salary_min")
+    if sm is not None:
+        try:
+            d["salary_min"] = int(sm)
+        except (TypeError, ValueError):
+            d["salary_min"] = 0
+
+    return d
+
+
+def insert_application(
+    job_id: int,
+    status: str,
+    cover_letter: str,
+    form_filled: bool,
+    error_message: Optional[str] = None,
+) -> int:
+    """Insert an application row and return its ``id``."""
+    sql = text(
+        """
+        INSERT INTO applications (job_id, status, applied_at, cover_letter, form_filled, error_message)
+        VALUES (:job_id, :status, NOW(), :cover_letter, :form_filled, :error_message)
+        RETURNING id
+        """
+    )
+    with connection() as conn:
+        row = conn.execute(
+            sql,
+            {
+                "job_id": int(job_id),
+                "status": status,
+                "cover_letter": cover_letter or "",
+                "form_filled": bool(form_filled),
+                "error_message": error_message,
+            },
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("INSERT INTO applications did not return an id.")
+        return int(row[0])
