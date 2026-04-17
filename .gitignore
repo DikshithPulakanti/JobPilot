@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 venv/
 .env.local
+.next/
+out/
+backend/.tmp_venv/
