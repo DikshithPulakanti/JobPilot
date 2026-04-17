@@ -41,8 +41,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     source TEXT,
     found_at TIMESTAMPTZ,
     fit_score NUMERIC(5, 2),
-    recommendation TEXT
+    recommendation TEXT,
+    location TEXT NOT NULL DEFAULT ''
 );
+
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS location TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS applications (
     id SERIAL PRIMARY KEY,
