@@ -186,3 +186,52 @@ def get_jobs(limit: int = 50) -> List[Dict[str, Any]]:
                 d[k] = float(v)
         out.append(d)
     return out
+
+
+def update_job_score(job_id: int, fit_score: float, recommendation: str) -> None:
+    """Persist ``fit_score`` and ``recommendation`` for a job row."""
+    sql = text(
+        """
+        UPDATE jobs
+        SET fit_score = :fit_score, recommendation = :recommendation
+        WHERE id = :job_id
+        """
+    )
+    with connection() as conn:
+        result = conn.execute(
+            sql,
+            {
+                "job_id": int(job_id),
+                "fit_score": float(fit_score),
+                "recommendation": str(recommendation),
+            },
+        )
+        if result.rowcount == 0:
+            raise ValueError(f"No job found with id={job_id}")
+
+
+def get_unscored_jobs(limit: int = 50) -> List[Dict[str, Any]]:
+    """Jobs with ``fit_score`` NULL, newest by ``id`` first."""
+    lim = max(1, min(int(limit), 500))
+    sql = text(
+        """
+        SELECT id, title, company, url, description, source, found_at,
+               fit_score, recommendation, location
+        FROM jobs
+        WHERE fit_score IS NULL
+        ORDER BY id DESC
+        LIMIT :lim
+        """
+    )
+    with connection() as conn:
+        rows = conn.execute(sql, {"lim": lim}).mappings().all()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+            elif k == "fit_score" and v is not None:
+                d[k] = float(v)
+        out.append(d)
+    return out
