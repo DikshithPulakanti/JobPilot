@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Any, Awaitable, Callable
 
-from agents.fit_scorer import score_job_fit
+from agents.fit_scorer import score_job_fit, serialize_fit_explanation
 from agents.job_finder import find_jobs
 from orchestrator.retry_types import is_retryable_exception
 from orchestrator.state import AgentState
@@ -147,7 +147,14 @@ async def node_scoring(state: AgentState, publish: PublishFn) -> dict[str, Any]:
 
         overall = float(result["overall"])
         rec = str(result["recommendation"])
-        await asyncio.to_thread(tracker_db.update_job_score, job_id, overall, rec)
+        fit_details = serialize_fit_explanation(result)
+        await asyncio.to_thread(
+            tracker_db.update_job_score,
+            job_id,
+            overall,
+            rec,
+            fit_details=fit_details,
+        )
         if rec in counts:
             counts[rec] += 1
         if rec in ("apply", "review"):

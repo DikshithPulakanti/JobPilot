@@ -1,8 +1,4 @@
-import { ApplicationTable } from "./components/ApplicationTable";
-import { DashboardMetrics } from "./components/DashboardMetrics";
-import { FitScoreChart } from "./components/FitScoreChart";
-import { LiveFeed } from "./components/LiveFeed";
-import { StartResumeForm } from "./components/StartResumeForm";
+import { DashboardTabs } from "./components/DashboardTabs";
 
 export default function Home() {
   return (
@@ -11,23 +7,12 @@ export default function Home() {
         <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">JobPilot</p>
         <h1 className="text-3xl font-bold text-slate-900">Application command center</h1>
         <p className="max-w-3xl text-base text-slate-600">
-          Monitor orchestration progress, fit scores, and downstream applications as agents discover roles and
-          prepare submissions.
+          Save your profile and EEO answers, review scored roles (fit, description, terms when available), then
+          queue fill-only apply flows for the jobs you choose. Submission stays with you.
         </p>
       </header>
 
-      <DashboardMetrics />
-
-      <StartResumeForm />
-
-      <section className="grid gap-6 lg:grid-cols-2">
-        <div className="min-h-[28rem]">
-          <LiveFeed />
-        </div>
-        <FitScoreChart />
-      </section>
-
-      <ApplicationTable />
+      <DashboardTabs />
     </main>
   );
 }

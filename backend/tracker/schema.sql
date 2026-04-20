@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     industries JSONB DEFAULT '[]'::jsonb,
     summary TEXT NOT NULL DEFAULT '',
     preferences_text TEXT,
+    application_answers JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -31,6 +32,7 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS preferred_locations JSONB DEFAUL
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS industries JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '';
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS preferences_text TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS application_answers JSONB DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS jobs (
     id SERIAL PRIMARY KEY,
@@ -42,10 +44,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     found_at TIMESTAMPTZ,
     fit_score NUMERIC(5, 2),
     recommendation TEXT,
-    location TEXT NOT NULL DEFAULT ''
+    location TEXT NOT NULL DEFAULT '',
+    fit_details JSONB,
+    terms_snippet TEXT
 );
 
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS location TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS fit_details JSONB;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS terms_snippet TEXT;
 
 CREATE TABLE IF NOT EXISTS applications (
     id SERIAL PRIMARY KEY,

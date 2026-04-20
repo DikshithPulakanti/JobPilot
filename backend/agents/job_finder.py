@@ -47,11 +47,46 @@ async def _delay_action() -> None:
     await asyncio.sleep(random.uniform(2.0, 5.0))
 
 
+_SENIORITY_MAP: Dict[str, str] = {
+    "senior": "Senior",
+    "sr": "Senior",
+    "lead": "Lead",
+    "staff": "Staff",
+    "principal": "Principal",
+    "junior": "Junior",
+    "jr": "Junior",
+    "entry": "Entry Level",
+}
+
+
+def _enrich_role(role: str, profile: Dict[str, Any]) -> str:
+    """Prepend seniority to role title when not already present."""
+    seniority = str(profile.get("seniority") or "").strip().lower()
+    prefix = _SENIORITY_MAP.get(seniority, "")
+    if prefix and prefix.lower() not in role.lower():
+        return f"{prefix} {role}"
+    return role
+
+
+def _all_roles(profile: Dict[str, Any]) -> list[str]:
+    """Return up to 3 distinct enriched role strings, falling back to 'software engineer'."""
+    raw = profile.get("target_roles") or []
+    roles: list[str] = []
+    seen: set[str] = set()
+    for r in raw:
+        enriched = _enrich_role(str(r).strip(), profile)
+        if enriched and enriched not in seen:
+            seen.add(enriched)
+            roles.append(enriched)
+        if len(roles) == 3:
+            break
+    if not roles:
+        roles = [_enrich_role("software engineer", profile)]
+    return roles
+
+
 def _first_role(profile: Dict[str, Any]) -> str:
-    roles = profile.get("target_roles") or []
-    if isinstance(roles, list) and roles:
-        return str(roles[0]).strip()
-    return "software engineer"
+    return _all_roles(profile)[0]
 
 
 def _first_location(profile: Dict[str, Any]) -> str:
@@ -64,8 +99,18 @@ def _first_location(profile: Dict[str, Any]) -> str:
     return "United States"
 
 
-def _indeed_search_url(role: str, location: str) -> str:
+def _is_remote_preferred(profile: Dict[str, Any]) -> bool:
+    """Return True when the candidate's preferences mention remote work."""
+    prefs = str(profile.get("preferences_text") or "").lower()
+    locs = [str(l).lower() for l in (profile.get("preferred_locations") or [])]
+    return "remote" in prefs or any("remote" in l for l in locs)
+
+
+def _indeed_search_url(role: str, location: str, remote: bool = False) -> str:
     q = quote_plus(role)
+    if remote:
+        # Use Indeed's built-in remote filter
+        return f"{INDEED_BASE}?q={q}&l=remote&sc=0kf%3Aattr%28DSQF7%29%3B&remotejob=1"
     l = quote_plus(location)
     return f"{INDEED_BASE}?q={q}&l={l}"
 
@@ -391,27 +436,9 @@ async def _extract_jobs_vision(page: Any) -> List[Dict[str, Any]]:
     return out
 
 
-async def find_jobs(profile: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Search Indeed using the first ``target_roles`` and first ``preferred_locations`` entry,
-    extract job postings (DOM first, GPT-4o vision if needed), persist each to PostgreSQL,
-    and return the list of job dicts (title, company, location, url, description, source).
-    """
-    if profile.get("error"):
-        raise ValueError("Profile contains error; cannot search jobs.")
-
-    # Keys are loaded for consistency with project .env (vision uses OpenAI only).
-    _ = os.getenv("ANTHROPIC_API_KEY")
-    if not os.getenv("OPENAI_API_KEY"):
-        logger.warning("OPENAI_API_KEY is not set; vision fallback will be unavailable.")
-
-    role = _first_role(profile)
-    location = _first_location(profile)
-    url = _indeed_search_url(role, location)
-    logger.info("Indeed search: %s", url)
-
+async def _scrape_indeed_url(url: str) -> List[Dict[str, Any]]:
+    """Open one Indeed search URL, extract jobs via DOM (+ vision fallback), return raw list."""
     jobs: List[Dict[str, Any]] = []
-
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=_playwright_headless())
@@ -435,7 +462,7 @@ async def find_jobs(profile: Dict[str, Any]) -> List[Dict[str, Any]]:
                         timeout=45_000,
                     )
                 except PlaywrightTimeoutError:
-                    logger.warning("Timeout waiting for job list selectors.")
+                    logger.warning("Timeout waiting for job list selectors on %s", url)
 
                 await _delay_action()
                 for _ in range(4):
@@ -460,8 +487,61 @@ async def find_jobs(profile: Dict[str, Any]) -> List[Dict[str, Any]]:
                 await context.close()
                 await browser.close()
     except PlaywrightError as exc:
-        logger.exception("Playwright error: %s", exc)
+        logger.exception("Playwright error on %s: %s", url, exc)
         raise RuntimeError(f"Browser automation failed: {exc!s}") from exc
+    return jobs
+
+
+async def find_jobs(profile: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Search Indeed for up to 3 target roles (seniority-enriched), applying a remote filter when
+    the candidate's preferences request remote work.  Deduplicates by canonical URL, persists
+    each new job to PostgreSQL, and returns the list of job dicts.
+    """
+    if profile.get("error"):
+        raise ValueError("Profile contains error; cannot search jobs.")
+
+    _ = os.getenv("ANTHROPIC_API_KEY")
+    if not os.getenv("OPENAI_API_KEY"):
+        logger.warning("OPENAI_API_KEY is not set; vision fallback will be unavailable.")
+
+    roles = _all_roles(profile)
+    location = _first_location(profile)
+    remote = _is_remote_preferred(profile)
+
+    # Build deduplicated search URLs (primary role + any additional unique roles)
+    search_urls: list[str] = []
+    seen_queries: set[str] = set()
+    for role in roles:
+        url = _indeed_search_url(role, location, remote=remote)
+        if url not in seen_queries:
+            seen_queries.add(url)
+            search_urls.append(url)
+
+    logger.info(
+        "Indeed searches (%d): %s | remote=%s",
+        len(search_urls),
+        [r for r in roles],
+        remote,
+    )
+
+    # Run searches sequentially to avoid rate-limiting; collect by canonical URL
+    all_jobs_by_url: Dict[str, Dict[str, Any]] = {}
+    for search_url in search_urls:
+        logger.info("Searching: %s", search_url)
+        try:
+            batch = await _scrape_indeed_url(search_url)
+        except RuntimeError as exc:
+            logger.warning("Search failed for %s: %s", search_url, exc)
+            continue
+        for job in batch:
+            all_jobs_by_url.setdefault(job["url"], job)
+        # Brief pause between searches to be polite
+        if len(search_urls) > 1:
+            await asyncio.sleep(random.uniform(3.0, 6.0))
+
+    jobs = list(all_jobs_by_url.values())
+    logger.info("Total unique jobs across all searches: %d", len(jobs))
 
     saved: List[Dict[str, Any]] = []
     for job in jobs:

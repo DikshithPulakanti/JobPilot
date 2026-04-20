@@ -309,6 +309,17 @@ async def score_fit(job: Dict[str, Any], profile: Dict[str, Any]) -> Dict[str, A
     return await score_job_fit(job, profile)
 
 
+def serialize_fit_explanation(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Shape stored in ``jobs.fit_details``: overall summary, red flags, and per-dimension score+reason.
+    """
+    return {
+        "reasoning": str(result.get("reasoning") or "").strip(),
+        "red_flags": [str(x).strip() for x in (result.get("red_flags") or []) if str(x).strip()],
+        "scores": result.get("scores") or {},
+    }
+
+
 if __name__ == "__main__":
     import asyncio
 

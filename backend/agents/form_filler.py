@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -37,6 +39,44 @@ def field_mapper(
     """
     key = (what_to_fill or "").strip().lower()
     hint = f"{what_to_fill} {label} {placeholder}".strip().lower()
+
+    aa_raw = profile.get("application_answers")
+    if isinstance(aa_raw, str):
+        try:
+            aa = json.loads(aa_raw)
+        except json.JSONDecodeError:
+            aa = {}
+    else:
+        aa = aa_raw or {}
+    if not isinstance(aa, dict):
+        aa = {}
+
+    # Role- or company-specific essays: leave empty for the user at submit time.
+    if re.search(
+        r"why\s+(do you want|are you interested)|what (attracts|interests) you.*(company|role|position)|"
+        r"describe.*(why|how).*(company|this role|us)\b|"
+        r"what (do you know|would you bring).*(company|team)\b",
+        hint,
+        re.I,
+    ):
+        return None
+
+    if re.search(r"\b(race|ethnicity)\b", hint) and aa.get("race_ethnicity"):
+        return str(aa["race_ethnicity"]).strip() or None
+    if re.search(r"\bgender\b", hint) and "neutral" not in hint and aa.get("gender"):
+        return str(aa["gender"]).strip() or None
+    if re.search(r"veteran", hint) and aa.get("veteran_status"):
+        return str(aa["veteran_status"]).strip() or None
+    if re.search(r"disabilit", hint) and aa.get("disability_status"):
+        return str(aa["disability_status"]).strip() or None
+    if (
+        re.search(
+            r"work\s+authorization|legally\s+eligible|sponsorship|visa\s+status|are you authorized",
+            hint,
+        )
+        and aa.get("work_authorization_detail")
+    ):
+        return str(aa["work_authorization_detail"]).strip() or None
 
     if (
         key == "resume file upload"

@@ -22,7 +22,13 @@ from agents.apply_navigator import IndeedAuthBlockedError, prepare_application_p
 from agents.cover_letter import generate_cover_letter  # noqa: E402
 from agents.form_filler import fill_application_fields  # noqa: E402
 from agents.form_reader import read_form_fields  # noqa: E402
-from tracker.db import get_job_by_id, get_latest_candidate_profile, insert_application  # noqa: E402
+from agents.terms_extract import extract_terms_snippet_from_page  # noqa: E402
+from tracker.db import (  # noqa: E402
+    get_job_by_id,
+    get_latest_candidate_profile,
+    insert_application,
+    update_job_terms_snippet,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +97,14 @@ async def run_application_flow(job_id: int, profile: Dict[str, Any]) -> None:
             print("Preparing page (apply / consent if needed)...")
             page = await prepare_application_page(page, job_id=job_id, cover_letter=cover)
             print(f"Active URL: {(page.url or '')[:100]}...")
+
+            try:
+                terms_text = await extract_terms_snippet_from_page(page)
+                if terms_text.strip():
+                    await asyncio.to_thread(update_job_terms_snippet, job_id, terms_text)
+                    print(f"Captured ~{len(terms_text)} chars of terms/legal text for job {job_id}.")
+            except Exception:
+                logger.exception("terms snippet extraction failed (non-fatal)")
 
             print("Reading form fields (GPT-4o Vision + DOM fallback)...")
             fields = await read_form_fields(page)

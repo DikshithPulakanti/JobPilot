@@ -17,7 +17,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 load_dotenv(_BACKEND_ROOT / ".env", override=True)
 
-from agents.fit_scorer import score_job_fit  # noqa: E402
+from agents.fit_scorer import score_job_fit, serialize_fit_explanation  # noqa: E402
 from tracker.db import get_latest_candidate_profile, get_unscored_jobs, update_job_score  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ async def run_scoring_pipeline(limit: int = 50) -> None:
         rec = str(result["recommendation"])
         print(f"  -> overall={overall} recommendation={rec}")
 
-        update_job_score(job_id, overall, rec)
+        update_job_score(job_id, overall, rec, fit_details=serialize_fit_explanation(result))
         if rec in counts:
             counts[rec] += 1
         scored_rows.append((job_row, result))

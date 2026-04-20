@@ -24,6 +24,45 @@ def get_engine() -> Engine:
     return _engine
 
 
+def _application_answers_dict(val: Any) -> Dict[str, Any]:
+    if val is None:
+        return {}
+    if isinstance(val, dict):
+        return dict(val)
+    if isinstance(val, str):
+        try:
+            o = json.loads(val)
+        except json.JSONDecodeError:
+            return {}
+        return dict(o) if isinstance(o, dict) else {}
+    return {}
+
+
+def _parse_fit_details(val: Any) -> Optional[Dict[str, Any]]:
+    if val is None:
+        return None
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _normalize_job_row(d: Dict[str, Any]) -> Dict[str, Any]:
+    for k, v in list(d.items()):
+        if hasattr(v, "isoformat"):
+            d[k] = v.isoformat()
+        elif k == "fit_score" and v is not None:
+            d[k] = float(v)
+        elif k == "fit_details":
+            d[k] = _parse_fit_details(v)
+    return d
+
+
 @contextmanager
 def connection() -> Generator[Any, None, None]:
     engine = get_engine()
@@ -59,12 +98,14 @@ def insert_candidate_profile(profile: Dict[str, Any], preferences: str = "") -> 
         INSERT INTO candidates (
             name, email, phone, location, skills, experience_years, seniority,
             target_roles, education, visa_status, salary_min,
-            preferred_locations, industries, summary, preferences_text
+            preferred_locations, industries, summary, preferences_text,
+            application_answers
         ) VALUES (
             :name, :email, :phone, :location,
             CAST(:skills AS jsonb), :experience_years, :seniority,
             CAST(:target_roles AS jsonb), CAST(:education AS jsonb), :visa_status, :salary_min,
-            CAST(:preferred_locations AS jsonb), CAST(:industries AS jsonb), :summary, :preferences_text
+            CAST(:preferred_locations AS jsonb), CAST(:industries AS jsonb), :summary, :preferences_text,
+            CAST(:application_answers AS jsonb)
         )
         RETURNING id
         """
@@ -86,6 +127,7 @@ def insert_candidate_profile(profile: Dict[str, Any], preferences: str = "") -> 
         "industries": json.dumps(profile.get("industries", [])),
         "summary": profile.get("summary") or "",
         "preferences_text": preferences or "",
+        "application_answers": json.dumps(profile.get("application_answers") or {}),
     }
 
     try:
@@ -168,7 +210,7 @@ def get_jobs(limit: int = 50) -> List[Dict[str, Any]]:
     sql = text(
         """
         SELECT id, title, company, url, description, source, found_at,
-               fit_score, recommendation, location
+               fit_score, recommendation, location, fit_details, terms_snippet
         FROM jobs
         ORDER BY id DESC
         LIMIT :lim
@@ -178,36 +220,84 @@ def get_jobs(limit: int = 50) -> List[Dict[str, Any]]:
         rows = conn.execute(sql, {"lim": lim}).mappings().all()
     out: List[Dict[str, Any]] = []
     for r in rows:
-        d = dict(r)
-        for k, v in list(d.items()):
-            if hasattr(v, "isoformat"):
-                d[k] = v.isoformat()
-            elif k == "fit_score" and v is not None:
-                d[k] = float(v)
-        out.append(d)
+        out.append(_normalize_job_row(dict(r)))
     return out
 
 
-def update_job_score(job_id: int, fit_score: float, recommendation: str) -> None:
-    """Persist ``fit_score`` and ``recommendation`` for a job row."""
+def update_job_score(
+    job_id: int,
+    fit_score: float,
+    recommendation: str,
+    *,
+    fit_details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Persist ``fit_score``, ``recommendation``, and optional structured fit rationale."""
+    if fit_details is not None:
+        sql = text(
+            """
+            UPDATE jobs
+            SET fit_score = :fit_score,
+                recommendation = :recommendation,
+                fit_details = CAST(:fit_details AS jsonb)
+            WHERE id = :job_id
+            """
+        )
+        params: Dict[str, Any] = {
+            "job_id": int(job_id),
+            "fit_score": float(fit_score),
+            "recommendation": str(recommendation),
+            "fit_details": json.dumps(fit_details),
+        }
+    else:
+        sql = text(
+            """
+            UPDATE jobs
+            SET fit_score = :fit_score, recommendation = :recommendation
+            WHERE id = :job_id
+            """
+        )
+        params = {
+            "job_id": int(job_id),
+            "fit_score": float(fit_score),
+            "recommendation": str(recommendation),
+        }
+    try:
+        with connection() as conn:
+            result = conn.execute(sql, params)
+        if result.rowcount == 0:
+            raise ValueError(f"No job found with id={job_id}")
+    except Exception as exc:  # noqa: BLE001
+        orig = getattr(exc, "orig", None)
+        if (
+            fit_details is not None
+            and orig is not None
+            and type(orig).__name__ == "UndefinedColumn"
+        ):
+            raise RuntimeError(
+                'Jobs table is missing the "fit_details" column. From the `backend` directory run:\n'
+                '  psql "$DATABASE_URL" -f tracker/migrate_fit_details.sql\n'
+                "or apply tracker/schema.sql to your database."
+            ) from exc
+        raise
+
+
+def update_job_terms_snippet(job_id: int, terms_snippet: str) -> None:
+    """Best-effort legal / terms text observed on the application flow (may be empty)."""
     sql = text(
         """
         UPDATE jobs
-        SET fit_score = :fit_score, recommendation = :recommendation
+        SET terms_snippet = :terms_snippet
         WHERE id = :job_id
         """
     )
     with connection() as conn:
-        result = conn.execute(
+        conn.execute(
             sql,
             {
                 "job_id": int(job_id),
-                "fit_score": float(fit_score),
-                "recommendation": str(recommendation),
+                "terms_snippet": (terms_snippet or "")[:24000] or None,
             },
         )
-        if result.rowcount == 0:
-            raise ValueError(f"No job found with id={job_id}")
 
 
 def get_unscored_jobs(limit: int = 50) -> List[Dict[str, Any]]:
@@ -216,7 +306,7 @@ def get_unscored_jobs(limit: int = 50) -> List[Dict[str, Any]]:
     sql = text(
         """
         SELECT id, title, company, url, description, source, found_at,
-               fit_score, recommendation, location
+               fit_score, recommendation, location, fit_details, terms_snippet
         FROM jobs
         WHERE fit_score IS NULL
         ORDER BY id DESC
@@ -227,13 +317,7 @@ def get_unscored_jobs(limit: int = 50) -> List[Dict[str, Any]]:
         rows = conn.execute(sql, {"lim": lim}).mappings().all()
     out: List[Dict[str, Any]] = []
     for r in rows:
-        d = dict(r)
-        for k, v in list(d.items()):
-            if hasattr(v, "isoformat"):
-                d[k] = v.isoformat()
-            elif k == "fit_score" and v is not None:
-                d[k] = float(v)
-        out.append(d)
+        out.append(_normalize_job_row(dict(r)))
     return out
 
 
@@ -242,7 +326,7 @@ def get_job_by_id(job_id: int) -> Optional[Dict[str, Any]]:
     sql = text(
         """
         SELECT id, title, company, url, description, source, found_at,
-               fit_score, recommendation, location
+               fit_score, recommendation, location, fit_details, terms_snippet
         FROM jobs
         WHERE id = :jid
         """
@@ -251,22 +335,17 @@ def get_job_by_id(job_id: int) -> Optional[Dict[str, Any]]:
         row = conn.execute(sql, {"jid": int(job_id)}).mappings().first()
     if row is None:
         return None
-    d = dict(row)
-    for k, v in list(d.items()):
-        if hasattr(v, "isoformat"):
-            d[k] = v.isoformat()
-        elif k == "fit_score" and v is not None:
-            d[k] = float(v)
-    return d
+    return _normalize_job_row(dict(row))
 
 
 def get_latest_candidate_profile() -> Optional[Dict[str, Any]]:
     """Most recent ``candidates`` row as a profile dict (JSONB lists decoded)."""
     sql = text(
         """
-        SELECT name, email, phone, location, skills, experience_years, seniority,
+        SELECT id, name, email, phone, location, skills, experience_years, seniority,
                target_roles, education, visa_status, salary_min,
-               preferred_locations, industries, summary
+               preferred_locations, industries, summary, preferences_text,
+               application_answers
         FROM candidates
         ORDER BY id DESC
         LIMIT 1
@@ -307,7 +386,37 @@ def get_latest_candidate_profile() -> Optional[Dict[str, Any]]:
         except (TypeError, ValueError):
             d["salary_min"] = 0
 
+    d["application_answers"] = _application_answers_dict(d.get("application_answers"))
+
     return d
+
+
+def merge_latest_candidate_application_answers(patch: Dict[str, Any]) -> int:
+    """
+    Merge ``patch`` into the latest candidate's ``application_answers`` JSON (shallow merge).
+    Returns the candidate ``id``.
+    """
+    latest = get_latest_candidate_profile()
+    if not latest or not latest.get("id"):
+        raise ValueError("No candidate profile exists. Run POST /start first.")
+    cid = int(latest["id"])
+    base = _application_answers_dict(latest.get("application_answers"))
+    merged = {**base, **(patch or {})}
+    sql = text(
+        """
+        UPDATE candidates
+        SET application_answers = CAST(:application_answers AS jsonb)
+        WHERE id = :id
+        """
+    )
+    with connection() as conn:
+        result = conn.execute(
+            sql,
+            {"id": cid, "application_answers": json.dumps(merged)},
+        )
+        if result.rowcount == 0:
+            raise ValueError(f"No candidate with id={cid}")
+    return cid
 
 
 def insert_application(
@@ -347,7 +456,8 @@ def get_candidate_by_id(candidate_id: int) -> Optional[Dict[str, Any]]:
         """
         SELECT id, name, email, phone, location, skills, experience_years, seniority,
                target_roles, education, visa_status, salary_min,
-               preferred_locations, industries, summary, preferences_text
+               preferred_locations, industries, summary, preferences_text,
+               application_answers
         FROM candidates
         WHERE id = :cid
         """
@@ -386,6 +496,8 @@ def get_candidate_by_id(candidate_id: int) -> Optional[Dict[str, Any]]:
             d["salary_min"] = int(sm)
         except (TypeError, ValueError):
             d["salary_min"] = 0
+
+    d["application_answers"] = _application_answers_dict(d.get("application_answers"))
 
     return d
 
@@ -449,7 +561,8 @@ def list_applications_with_jobs(limit: int = 100) -> List[Dict[str, Any]]:
         """
         SELECT a.id AS application_id, a.job_id, a.status, a.applied_at,
                a.form_filled, a.error_message,
-               j.title, j.company, j.fit_score, j.recommendation, j.url
+               j.title, j.company, j.fit_score, j.recommendation, j.url, j.fit_details,
+               j.description, j.terms_snippet
         FROM applications a
         JOIN jobs j ON j.id = a.job_id
         ORDER BY a.applied_at DESC NULLS LAST, a.id DESC
@@ -460,13 +573,7 @@ def list_applications_with_jobs(limit: int = 100) -> List[Dict[str, Any]]:
         rows = conn.execute(sql, {"lim": lim}).mappings().all()
     out: List[Dict[str, Any]] = []
     for r in rows:
-        d = dict(r)
-        for k, v in list(d.items()):
-            if hasattr(v, "isoformat"):
-                d[k] = v.isoformat()
-            elif k == "fit_score" and v is not None:
-                d[k] = float(v)
-        out.append(d)
+        out.append(_normalize_job_row(dict(r)))
     return out
 
 

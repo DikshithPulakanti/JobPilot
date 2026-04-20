@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { FitMatchRationale, type FitDetails } from "./FitMatchRationale";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -16,6 +17,7 @@ type Row = {
   fit_score: number | null;
   recommendation: string | null;
   url: string;
+  fit_details?: FitDetails | null;
 };
 
 type SortKey = "company" | "title" | "recommendation" | "status" | "applied_at" | "fit_score";
@@ -98,6 +100,7 @@ function SortTh({
 export function ApplicationTable() {
   const [rows, setRows] = useState<Row[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [openApplicationId, setOpenApplicationId] = useState<number | null>(null);
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
     key: "applied_at",
     dir: "desc",
@@ -169,34 +172,61 @@ export function ApplicationTable() {
               <SortTh label="Status" columnKey="status" sort={sort} onSort={toggleSort} />
               <SortTh label="Applied" columnKey="applied_at" sort={sort} onSort={toggleSort} />
               <SortTh label="Fit" columnKey="fit_score" sort={sort} onSort={toggleSort} />
+              <th className="px-4 py-3 font-semibold uppercase tracking-wide text-slate-500" scope="col">
+                Why
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.length === 0 ? (
               <tr>
-                <td className="px-4 py-6 text-slate-500" colSpan={6}>
+                <td className="px-4 py-6 text-slate-500" colSpan={7}>
                   No applications yet. Run the pipeline after scraping jobs.
                 </td>
               </tr>
             ) : (
-              sortedRows.map((row) => (
-                <tr key={row.application_id} className="hover:bg-slate-50/80">
-                  <td className="px-4 py-3 font-medium text-slate-900">{row.company}</td>
-                  <td className="px-4 py-3 text-slate-700">{row.title}</td>
-                  <td className="px-4 py-3 text-slate-600">{row.recommendation ?? "—"}</td>
-                  <td className="px-4 py-3">
-                    <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
-                      {row.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">{row.applied_at ?? "—"}</td>
-                  <td className="px-4 py-3 text-slate-900">
-                    {row.fit_score != null
-                      ? `${((row.fit_score / 10) * 100).toFixed(0)}%`
-                      : "—"}
-                  </td>
-                </tr>
-              ))
+              sortedRows.map((row) => {
+                const expanded = openApplicationId === row.application_id;
+                return (
+                  <Fragment key={row.application_id}>
+                    <tr className="hover:bg-slate-50/80">
+                      <td className="px-4 py-3 font-medium text-slate-900">{row.company}</td>
+                      <td className="px-4 py-3 text-slate-700">{row.title}</td>
+                      <td className="px-4 py-3 text-slate-600">{row.recommendation ?? "—"}</td>
+                      <td className="px-4 py-3">
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
+                          {row.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">{row.applied_at ?? "—"}</td>
+                      <td className="px-4 py-3 text-slate-900">
+                        {row.fit_score != null
+                          ? `${((row.fit_score / 10) * 100).toFixed(0)}%`
+                          : "—"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          className="text-sm font-medium text-blue-600 hover:text-blue-800"
+                          onClick={() =>
+                            setOpenApplicationId(expanded ? null : row.application_id)
+                          }
+                          aria-expanded={expanded}
+                        >
+                          {expanded ? "Hide" : "Show reasons"}
+                        </button>
+                      </td>
+                    </tr>
+                    {expanded ? (
+                      <tr className="bg-slate-50/50">
+                        <td className="px-4 py-4" colSpan={7}>
+                          <FitMatchRationale details={row.fit_details} />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })
             )}
           </tbody>
         </table>

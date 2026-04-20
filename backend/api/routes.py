@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
@@ -54,6 +54,18 @@ class PipelineRequest(BaseModel):
         default=None,
         description="Candidate row id; omit to use the most recently saved profile.",
     )
+
+
+class ApplicationAnswersPatch(BaseModel):
+    """Merge into ``candidates.application_answers`` (EEO, visa detail, etc.)."""
+
+    answers: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ApplySelectedRequest(BaseModel):
+    """Run the fill-only application flow for chosen job ids (apply/review recommendations only)."""
+
+    job_ids: List[int] = Field(..., min_length=1, max_length=25)
 
 
 async def _run_start_flow(
@@ -173,6 +185,67 @@ async def run_pipeline_endpoint(body: PipelineRequest, background_tasks: Backgro
     return {"status": "started", "candidate_id": body.candidate_id}
 
 
+@router.get("/candidate/latest")
+async def candidate_latest() -> dict[str, Any]:
+    """Latest saved profile including ``application_answers`` (or 404 if none)."""
+    row = await asyncio.to_thread(tracker_db.get_latest_candidate_profile)
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No candidate profile yet. POST /start or /start/upload first.",
+        )
+    return row
+
+
+@router.patch("/candidate/application-answers")
+async def patch_application_answers(body: ApplicationAnswersPatch) -> dict[str, Any]:
+    """Shallow-merge JSON answers used for EEO / visa / authorization fields when filling forms."""
+    try:
+        cid = await asyncio.to_thread(
+            tracker_db.merge_latest_candidate_application_answers,
+            body.answers,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {"ok": True, "candidate_id": cid}
+
+
+@router.post("/apply/selected")
+async def apply_selected_jobs(
+    body: ApplySelectedRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    """
+    Queue the browser fill flow for user-selected jobs (must be ``apply`` or ``review``).
+
+    Still fill-only (no submit). Opens Chromium for each job sequentially in the background task.
+    """
+
+    async def _run_selected() -> None:
+        prof = await asyncio.to_thread(tracker_db.get_latest_candidate_profile)
+        if not prof:
+            logger.warning("apply/selected: no candidate profile")
+            return
+        from agents.application_runner import run_application_flow
+
+        for jid in body.job_ids:
+            row = await asyncio.to_thread(tracker_db.get_job_by_id, jid)
+            if not row:
+                logger.warning("apply/selected: missing job id=%s", jid)
+                continue
+            rec = (row.get("recommendation") or "").strip().lower()
+            if rec not in ("apply", "review"):
+                logger.info("apply/selected: skip job %s (recommendation=%s)", jid, rec)
+                continue
+            try:
+                await run_application_flow(jid, prof)
+            except Exception:
+                logger.exception("apply/selected: failed job_id=%s", jid)
+
+    background_tasks.add_task(_run_selected)
+    return {"status": "started", "job_ids": list(body.job_ids)}
+
+
 @router.get("/metrics")
 async def metrics() -> dict[str, Any]:
     """Dashboard aggregate counts."""
@@ -197,3 +270,11 @@ async def list_applications(limit: int = 100) -> list[dict[str, Any]]:
 @router.get("/jobs")
 async def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
     return await asyncio.to_thread(tracker_db.get_jobs, limit)
+
+
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: int) -> dict[str, Any]:
+    row = await asyncio.to_thread(tracker_db.get_job_by_id, job_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+    return row
