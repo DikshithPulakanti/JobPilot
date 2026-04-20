@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars and fill in real values (never commit terraform.tfvars).
+
+aws_region = "us-east-1"
+
+# Your public IP for SSH — find with: curl -s https://checkip.amazonaws.com
+your_ip = "YOUR.PUBLIC.IP.ADDRESS/32"
+
+db_username = "jobpilot"
+db_name     = "jobpilot"
+
+# Use a strong password; it is stored in SSM and used by RDS.
+db_password = "CHANGE_ME_STRONG_PASSWORD"
+
+anthropic_api_key = "sk-ant-api03-CHANGE_ME"
+openai_api_key    = "sk-CHANGE_ME"
+github_token      = "ghp_CHANGE_ME"
+
+ec2_instance_type = "t3.medium"
+db_instance_class   = "db.t3.micro"
