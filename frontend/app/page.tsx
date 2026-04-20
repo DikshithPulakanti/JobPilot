@@ -1,7 +1,7 @@
 import { ApplicationTable } from "./components/ApplicationTable";
+import { DashboardMetrics } from "./components/DashboardMetrics";
 import { FitScoreChart } from "./components/FitScoreChart";
 import { LiveFeed } from "./components/LiveFeed";
-import { MetricCard } from "./components/MetricCard";
 
 export default function Home() {
   return (
@@ -15,11 +15,7 @@ export default function Home() {
         </p>
       </header>
 
-      <section className="grid gap-4 md:grid-cols-3">
-        <MetricCard label="Active runs" value="1" hint="Background orchestrations" />
-        <MetricCard label="Jobs tracked" value="128" hint="Across boards & referrals" />
-        <MetricCard label="Avg. fit" value="78%" hint="Rolling 7-day window" />
-      </section>
+      <DashboardMetrics />
 
       <section className="grid gap-6 lg:grid-cols-2">
         <div className="min-h-[28rem]">
