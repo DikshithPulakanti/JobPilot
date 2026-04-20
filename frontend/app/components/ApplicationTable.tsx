@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -18,9 +18,105 @@ type Row = {
   url: string;
 };
 
+type SortKey = "company" | "title" | "recommendation" | "status" | "applied_at" | "fit_score";
+
+function compareForSort(a: Row, b: Row, key: SortKey, dir: "asc" | "desc"): number {
+  const mult = dir === "asc" ? 1 : -1;
+
+  if (key === "fit_score") {
+    const na = a.fit_score;
+    const nb = b.fit_score;
+    if (na == null && nb == null) return 0;
+    if (na == null) return 1;
+    if (nb == null) return -1;
+    return (na - nb) * mult;
+  }
+
+  const sa =
+    key === "company"
+      ? a.company
+      : key === "title"
+        ? a.title
+        : key === "recommendation"
+          ? a.recommendation ?? ""
+          : key === "status"
+            ? a.status
+            : a.applied_at ?? "";
+
+  const sb =
+    key === "company"
+      ? b.company
+      : key === "title"
+        ? b.title
+        : key === "recommendation"
+          ? b.recommendation ?? ""
+          : key === "status"
+            ? b.status
+            : b.applied_at ?? "";
+
+  const va = sa.toLowerCase();
+  const vb = sb.toLowerCase();
+  if (va < vb) return -1 * mult;
+  if (va > vb) return 1 * mult;
+  return 0;
+}
+
+function SortTh({
+  label,
+  columnKey,
+  sort,
+  onSort,
+}: {
+  label: string;
+  columnKey: SortKey;
+  sort: { key: SortKey; dir: "asc" | "desc" };
+  onSort: (k: SortKey) => void;
+}) {
+  const active = sort.key === columnKey;
+  return (
+    <th
+      className="px-4 py-3"
+      scope="col"
+      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-800"
+        onClick={() => onSort(columnKey)}
+      >
+        {label}
+        {active ? (
+          <span aria-hidden className="text-slate-700">
+            {sort.dir === "asc" ? "↑" : "↓"}
+          </span>
+        ) : null}
+      </button>
+    </th>
+  );
+}
+
 export function ApplicationTable() {
   const [rows, setRows] = useState<Row[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
+    key: "applied_at",
+    dir: "desc",
+  });
+
+  const sortedRows = useMemo(() => {
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const c = compareForSort(a, b, sort.key, sort.dir);
+      return c !== 0 ? c : a.application_id - b.application_id;
+    });
+    return copy;
+  }, [rows, sort]);
+
+  const toggleSort = (key: SortKey) => {
+    setSort((prev) =>
+      prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" },
+    );
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -67,12 +163,12 @@ export function ApplicationTable() {
         <table className="min-w-full divide-y divide-slate-100 text-sm">
           <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
             <tr>
-              <th className="px-4 py-3">Company</th>
-              <th className="px-4 py-3">Role</th>
-              <th className="px-4 py-3">Recommendation</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Applied</th>
-              <th className="px-4 py-3">Fit</th>
+              <SortTh label="Company" columnKey="company" sort={sort} onSort={toggleSort} />
+              <SortTh label="Role" columnKey="title" sort={sort} onSort={toggleSort} />
+              <SortTh label="Recommendation" columnKey="recommendation" sort={sort} onSort={toggleSort} />
+              <SortTh label="Status" columnKey="status" sort={sort} onSort={toggleSort} />
+              <SortTh label="Applied" columnKey="applied_at" sort={sort} onSort={toggleSort} />
+              <SortTh label="Fit" columnKey="fit_score" sort={sort} onSort={toggleSort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -83,7 +179,7 @@ export function ApplicationTable() {
                 </td>
               </tr>
             ) : (
-              rows.map((row) => (
+              sortedRows.map((row) => (
                 <tr key={row.application_id} className="hover:bg-slate-50/80">
                   <td className="px-4 py-3 font-medium text-slate-900">{row.company}</td>
                   <td className="px-4 py-3 text-slate-700">{row.title}</td>
