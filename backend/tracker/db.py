@@ -468,3 +468,30 @@ def list_applications_with_jobs(limit: int = 100) -> List[Dict[str, Any]]:
                 d[k] = float(v)
         out.append(d)
     return out
+
+
+def get_fit_score_histogram() -> List[Dict[str, Any]]:
+    """
+    Bucket scored jobs by fit_score for charts.
+    Returns rows: { bucket_label, count }.
+    """
+    sql = text(
+        """
+        SELECT
+            CASE
+                WHEN fit_score >= 8 THEN '8-10'
+                WHEN fit_score >= 6 THEN '6-8'
+                WHEN fit_score >= 4 THEN '4-6'
+                WHEN fit_score >= 2 THEN '2-4'
+                ELSE '0-2'
+            END AS bucket_label,
+            COUNT(*) AS count
+        FROM jobs
+        WHERE fit_score IS NOT NULL
+        GROUP BY 1
+        ORDER BY 1
+        """
+    )
+    with connection() as conn:
+        rows = conn.execute(sql).mappings().all()
+    return [dict(r) for r in rows]
