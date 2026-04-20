@@ -38,6 +38,11 @@ MAX_DESC_LEN = 1000
 MIN_DOM_RESULTS = 3
 
 
+def _playwright_headless() -> bool:
+    """Headless for API/server pipelines; default false for local CLI demos."""
+    return os.getenv("PLAYWRIGHT_HEADLESS", "").lower() in ("1", "true", "yes")
+
+
 async def _delay_action() -> None:
     await asyncio.sleep(random.uniform(2.0, 5.0))
 
@@ -409,7 +414,7 @@ async def find_jobs(profile: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
+            browser = await p.chromium.launch(headless=_playwright_headless())
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 900},
                 user_agent=(
