@@ -339,3 +339,52 @@ def insert_application(
         if row is None:
             raise RuntimeError("INSERT INTO applications did not return an id.")
         return int(row[0])
+
+
+def get_candidate_by_id(candidate_id: int) -> Optional[Dict[str, Any]]:
+    """Load one candidate row as the same profile shape as ``get_latest_candidate_profile``."""
+    sql = text(
+        """
+        SELECT id, name, email, phone, location, skills, experience_years, seniority,
+               target_roles, education, visa_status, salary_min,
+               preferred_locations, industries, summary, preferences_text
+        FROM candidates
+        WHERE id = :cid
+        """
+    )
+    with connection() as conn:
+        row = conn.execute(sql, {"cid": int(candidate_id)}).mappings().first()
+    if row is None:
+        return None
+
+    def _jsonish(val: Any) -> Any:
+        if val is None:
+            return []
+        if isinstance(val, (list, dict)):
+            return val
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except json.JSONDecodeError:
+                return []
+        return val
+
+    d = dict(row)
+    for key in ("skills", "target_roles", "education", "preferred_locations", "industries"):
+        d[key] = _jsonish(d.get(key))
+
+    ey = d.get("experience_years")
+    if ey is not None:
+        try:
+            d["experience_years"] = int(round(float(ey)))
+        except (TypeError, ValueError):
+            d["experience_years"] = 0
+
+    sm = d.get("salary_min")
+    if sm is not None:
+        try:
+            d["salary_min"] = int(sm)
+        except (TypeError, ValueError):
+            d["salary_min"] = 0
+
+    return d
