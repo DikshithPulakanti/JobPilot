@@ -6,10 +6,168 @@ import asyncio
 import logging
 import re
 from typing import List, Optional, Protocol
-
 from playwright.async_api import Locator, Page
 
 logger = logging.getLogger(__name__)
+
+# Host fragments for direct employer ATS links (order preserved in extraction).
+ATS_HOST_FRAGMENTS: tuple[str, ...] = (
+    "greenhouse.io",
+    "lever.co",
+    "workday.com",
+    "myworkdayjobs.com",
+    "jobvite.com",
+    "taleo.net",
+)
+
+# Indeed sign-in / registration modal copy (after Apply Now).
+INDEED_SIGN_IN_MARKERS: tuple[str, ...] = (
+    "Create an account",
+    "Sign in to Indeed",
+    "Continue with Google",
+    "Create an Indeed account",
+)
+
+
+class IndeedAuthBlockedError(Exception):
+    """Indeed showed an auth wall and no external ATS URL was found; do not log in to Indeed."""
+
+
+def _url_matches_ats(url: str) -> bool:
+    u = (url or "").lower()
+    return any(frag in u for frag in ATS_HOST_FRAGMENTS)
+
+
+async def extract_ats_url(page: Page) -> Optional[str]:
+    """
+    Find a direct employer ATS URL on the current page.
+
+    Order:
+    1. ``<a href>`` containing known ATS hostnames
+    2. ``data-apply-url`` / ``data-jk`` on Apply controls (only if value looks like an ATS URL)
+    3. ``og:url`` / ``rel=canonical`` (only if they point at an ATS host)
+    """
+    try:
+        found = await page.evaluate(
+            """() => {
+              const frags = ["greenhouse.io","lever.co","workday.com","myworkdayjobs.com","jobvite.com","taleo.net"];
+              for (const a of document.querySelectorAll("a[href]")) {
+                const raw = (a.getAttribute("href") || "").trim();
+                if (!raw) continue;
+                const abs = raw.startsWith("http") ? raw : new URL(raw, document.baseURI).href;
+                const low = abs.toLowerCase();
+                if (frags.some(f => low.includes(f))) return abs;
+              }
+              return null;
+            }"""
+        )
+        if isinstance(found, str) and found.strip():
+            return found.strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("extract_ats_url: anchor scan failed: %s", exc)
+
+    apply_selectors = (
+        "#indeedApplyButton",
+        "a#indeedApplyButton",
+        "button#indeedApplyButton",
+        "a.indeed-apply-button",
+        "button.indeed-apply-button",
+        '[data-testid="indeedApplyButton"]',
+        "a[data-indeed-apply]",
+    )
+    for sel in apply_selectors:
+        loc = page.locator(sel).first
+        try:
+            if await loc.count() == 0:
+                continue
+            apply_url = await loc.get_attribute("data-apply-url")
+            if apply_url and apply_url.strip().lower().startswith("http") and _url_matches_ats(apply_url):
+                return apply_url.strip()
+            djk = await loc.get_attribute("data-jk")
+            if djk and ("http://" in djk or "https://" in djk) and _url_matches_ats(djk):
+                return djk.strip()
+        except Exception:  # noqa: BLE001
+            continue
+
+    try:
+        og = page.locator('meta[property="og:url"]').first
+        if await og.count():
+            content = await og.get_attribute("content")
+            if content and _url_matches_ats(content):
+                return content.strip()
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        link = page.locator('link[rel="canonical"]').first
+        if await link.count():
+            href = await link.get_attribute("href")
+            if href and _url_matches_ats(href):
+                return href.strip()
+    except Exception:  # noqa: BLE001
+        pass
+
+    return None
+
+
+async def _indeed_sign_in_modal_detected(page: Page) -> bool:
+    """Detect Indeed auth / registration UI by page text (no login attempted)."""
+    try:
+        html = await page.content()
+    except Exception:  # noqa: BLE001
+        return False
+    return any(marker in html for marker in INDEED_SIGN_IN_MARKERS)
+
+
+async def _handle_indeed_after_apply_click(
+    page: Page,
+    job_id: Optional[int],
+    cover_letter: str,
+) -> Page:
+    """
+    After Apply Now navigation, detect sign-in modal; try external ATS URL or record auth_blocked.
+    Never attempts Indeed login.
+    """
+    await asyncio.sleep(1.5)
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=15_000)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not await _indeed_sign_in_modal_detected(page):
+        return page
+
+    logger.info("Indeed sign-in / registration UI detected after Apply; looking for ATS URL.")
+    ats = await extract_ats_url(page)
+    if ats:
+        logger.info("Navigating to external ATS URL: %s", ats[:200])
+        try:
+            await page.goto(ats, wait_until="domcontentloaded", timeout=120_000)
+            await asyncio.sleep(1.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ATS navigation failed: %s", exc)
+            ats = None
+
+    if ats:
+        return page
+
+    err_msg = "Indeed auth wall — no direct ATS URL found"
+    if job_id is not None:
+        try:
+            from tracker.db import insert_application
+
+            insert_application(
+                job_id=job_id,
+                status="auth_blocked",
+                cover_letter=cover_letter or "",
+                form_filled=False,
+                error_message=err_msg,
+            )
+            logger.info("Recorded application job_id=%s status=auth_blocked", job_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to record auth_blocked for job_id=%s: %s", job_id, exc)
+
+    raise IndeedAuthBlockedError(err_msg)
 
 
 class _LocatorRoot(Protocol):
@@ -187,7 +345,12 @@ def _indeed_apply_locators(root: _LocatorRoot) -> List[Locator]:
     return locators
 
 
-async def _indeed_try_roots(page: Page, roots: List[_LocatorRoot]) -> Optional[Page]:
+async def _indeed_try_roots(
+    page: Page,
+    roots: List[_LocatorRoot],
+    job_id: Optional[int],
+    cover_letter: str,
+) -> Optional[Page]:
     for root in roots:
         for loc in _indeed_apply_locators(root):
             try:
@@ -200,11 +363,15 @@ async def _indeed_try_roots(page: Page, roots: List[_LocatorRoot]) -> Optional[P
                 continue
             out = await _click_apply_target(page, first)
             if out is not None:
-                return out
+                return await _handle_indeed_after_apply_click(out, job_id, cover_letter)
     return None
 
 
-async def _indeed_open_apply(page: Page) -> Optional[Page]:
+async def _indeed_open_apply(
+    page: Page,
+    job_id: Optional[int],
+    cover_letter: str,
+) -> Optional[Page]:
     """
     On Indeed job pages, click the primary Apply control and return the page that
     hosts the application (new tab/window if opened, else same page).
@@ -224,7 +391,7 @@ async def _indeed_open_apply(page: Page) -> Optional[Page]:
 
     job_container = await _indeed_job_container(page)
     roots = _indeed_apply_roots(page, job_container)
-    result = await _indeed_try_roots(page, roots)
+    result = await _indeed_try_roots(page, roots, job_id, cover_letter)
     if result is not None:
         return result
 
@@ -232,16 +399,22 @@ async def _indeed_open_apply(page: Page) -> Optional[Page]:
     return None
 
 
-async def prepare_application_page(page: Page) -> Page:
+async def prepare_application_page(
+    page: Page,
+    *,
+    job_id: Optional[int] = None,
+    cover_letter: str = "",
+) -> Page:
     """
     After landing on a job URL, try board-specific steps so application fields appear.
 
     Returns the ``Page`` to use for form reading (may be a new tab).
+    Raises :class:`IndeedAuthBlockedError` if Indeed requires sign-in and no external ATS URL exists.
     """
     await dismiss_common_overlays(page)
     u = (page.url or "").lower()
     if "indeed.com" in u:
-        opened = await _indeed_open_apply(page)
+        opened = await _indeed_open_apply(page, job_id, cover_letter)
         if opened is not None:
             return opened
     return page

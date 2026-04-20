@@ -18,7 +18,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 load_dotenv(_BACKEND_ROOT / ".env", override=True)
 
-from agents.apply_navigator import prepare_application_page  # noqa: E402
+from agents.apply_navigator import IndeedAuthBlockedError, prepare_application_page  # noqa: E402
 from agents.cover_letter import generate_cover_letter  # noqa: E402
 from agents.form_filler import fill_application_fields  # noqa: E402
 from agents.form_reader import read_form_fields  # noqa: E402
@@ -89,7 +89,7 @@ async def run_application_flow(job_id: int, profile: Dict[str, Any]) -> None:
             await asyncio.sleep(3.0)
 
             print("Preparing page (apply / consent if needed)...")
-            page = await prepare_application_page(page)
+            page = await prepare_application_page(page, job_id=job_id, cover_letter=cover)
             print(f"Active URL: {(page.url or '')[:100]}...")
 
             print("Reading form fields (GPT-4o Vision + DOM fallback)...")
@@ -155,6 +155,9 @@ if __name__ == "__main__":
         if not profile:
             print("No candidate in database. Run POST /start or insert a candidate first.")
             return
-        await run_application_flow(_jid, profile)
+        try:
+            await run_application_flow(_jid, profile)
+        except IndeedAuthBlockedError as exc:
+            print(f"Indeed auth wall (recorded as auth_blocked): {exc}")
 
     asyncio.run(_main())
