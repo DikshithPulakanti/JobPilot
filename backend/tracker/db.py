@@ -440,3 +440,31 @@ def get_dashboard_metrics() -> Dict[str, Any]:
     for k, v in list(d.items()):
         d[k] = int(v) if v is not None else 0
     return d
+
+
+def list_applications_with_jobs(limit: int = 100) -> List[Dict[str, Any]]:
+    """Applications joined to job title/company/fit for the dashboard table."""
+    lim = max(1, min(int(limit), 500))
+    sql = text(
+        """
+        SELECT a.id AS application_id, a.job_id, a.status, a.applied_at,
+               a.form_filled, a.error_message,
+               j.title, j.company, j.fit_score, j.recommendation, j.url
+        FROM applications a
+        JOIN jobs j ON j.id = a.job_id
+        ORDER BY a.applied_at DESC NULLS LAST, a.id DESC
+        LIMIT :lim
+        """
+    )
+    with connection() as conn:
+        rows = conn.execute(sql, {"lim": lim}).mappings().all()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+            elif k == "fit_score" and v is not None:
+                d[k] = float(v)
+        out.append(d)
+    return out
