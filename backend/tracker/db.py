@@ -495,3 +495,23 @@ def get_fit_score_histogram() -> List[Dict[str, Any]]:
     with connection() as conn:
         rows = conn.execute(sql).mappings().all()
     return [dict(r) for r in rows]
+
+
+def get_recommendation_counts() -> Dict[str, int]:
+    """apply / review / skip counts for charts."""
+    sql = text(
+        """
+        SELECT recommendation, COUNT(*) AS c
+        FROM jobs
+        WHERE recommendation IS NOT NULL AND recommendation <> ''
+        GROUP BY recommendation
+        """
+    )
+    with connection() as conn:
+        rows = conn.execute(sql).mappings().all()
+    out: Dict[str, int] = {"apply": 0, "review": 0, "skip": 0}
+    for r in rows:
+        k = str(r.get("recommendation") or "").lower()
+        if k in out:
+            out[k] = int(r["c"])
+    return out
