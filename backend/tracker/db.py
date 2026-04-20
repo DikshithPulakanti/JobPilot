@@ -388,3 +388,32 @@ def get_candidate_by_id(candidate_id: int) -> Optional[Dict[str, Any]]:
             d["salary_min"] = 0
 
     return d
+
+
+def insert_event(
+    action: str,
+    company: Optional[str] = None,
+    title: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+    status: Optional[str] = None,
+) -> int:
+    """Persist a pipeline / dashboard event to ``events``."""
+    sql = text(
+        """
+        INSERT INTO events (action, company, title, details, status)
+        VALUES (:action, :company, :title, CAST(:details AS jsonb), :status)
+        RETURNING id
+        """
+    )
+    payload = {
+        "action": str(action),
+        "company": company,
+        "title": title,
+        "details": json.dumps(details if details is not None else {}),
+        "status": status,
+    }
+    with connection() as conn:
+        row = conn.execute(sql, payload).fetchone()
+        if row is None:
+            raise RuntimeError("INSERT INTO events did not return an id.")
+        return int(row[0])
