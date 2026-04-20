@@ -417,3 +417,26 @@ def insert_event(
         if row is None:
             raise RuntimeError("INSERT INTO events did not return an id.")
         return int(row[0])
+
+
+def get_dashboard_metrics() -> Dict[str, Any]:
+    """Aggregate counts for the dashboard (jobs, scored, applications, recommendations)."""
+    sql = text(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM jobs) AS jobs_total,
+            (SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL) AS jobs_scored,
+            (SELECT COUNT(*) FROM applications) AS applications_total,
+            (SELECT COUNT(*) FROM jobs WHERE recommendation = 'apply') AS rec_apply,
+            (SELECT COUNT(*) FROM jobs WHERE recommendation = 'review') AS rec_review,
+            (SELECT COUNT(*) FROM jobs WHERE recommendation = 'skip') AS rec_skip
+        """
+    )
+    with connection() as conn:
+        row = conn.execute(sql).mappings().first()
+    if row is None:
+        return {}
+    d = dict(row)
+    for k, v in list(d.items()):
+        d[k] = int(v) if v is not None else 0
+    return d
