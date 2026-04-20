@@ -4,10 +4,11 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from agents.profile_builder import build_candidate_profile
+from agents.resume_upload import extract_resume_text
 from api.events import event_hub
 from orchestrator.graph import run_full_pipeline
 from tracker import db as tracker_db
@@ -55,31 +56,21 @@ class PipelineRequest(BaseModel):
     )
 
 
-@router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@router.get("/health/db")
-async def health_db() -> dict[str, Any]:
-    ok = tracker_db.healthcheck()
-    return {"status": "ok" if ok else "error", "database": "connected" if ok else "unavailable"}
-
-
-@router.post("/start")
-async def start_run(body: StartRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    """
-    Parse resume + preferences into a structured profile via Claude, persist to PostgreSQL,
-    and return the profile JSON (including database id).
-    """
-    resume = (body.resume_text or "").strip()
-    if not resume:
+async def _run_start_flow(
+    resume: str,
+    preferences: str,
+    run_pipeline: bool,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    """Shared body for JSON ``/start`` and multipart ``/start/upload``."""
+    resume_stripped = (resume or "").strip()
+    if not resume_stripped:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="resume_text is required and cannot be empty.",
+            detail="Resume text is empty after reading your input.",
         )
 
-    profile = await build_candidate_profile(resume, body.preferences or "")
+    profile = await build_candidate_profile(resume_stripped, preferences or "")
     if profile.get("error"):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -90,7 +81,7 @@ async def start_run(body: StartRequest, background_tasks: BackgroundTasks) -> di
         candidate_id = await asyncio.to_thread(
             tracker_db.insert_candidate_profile,
             profile,
-            body.preferences or "",
+            preferences or "",
         )
     except RuntimeError as exc:
         msg = str(exc)
@@ -112,7 +103,7 @@ async def start_run(body: StartRequest, background_tasks: BackgroundTasks) -> di
         ) from exc
 
     out: Dict[str, Any] = {"id": candidate_id, **profile}
-    if body.run_pipeline:
+    if run_pipeline:
 
         async def _pipeline() -> None:
             try:
@@ -123,6 +114,46 @@ async def start_run(body: StartRequest, background_tasks: BackgroundTasks) -> di
         background_tasks.add_task(_pipeline)
         out["pipeline"] = "started"
     return out
+
+
+@router.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@router.get("/health/db")
+async def health_db() -> dict[str, Any]:
+    ok = tracker_db.healthcheck()
+    return {"status": "ok" if ok else "error", "database": "connected" if ok else "unavailable"}
+
+
+@router.post("/start")
+async def start_run(body: StartRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    """
+    Parse resume + preferences into a structured profile via Claude, persist to PostgreSQL,
+    and return the profile JSON (including database id).
+    """
+    return await _run_start_flow(body.resume_text, body.preferences or "", body.run_pipeline, background_tasks)
+
+
+@router.post("/start/upload")
+async def start_run_upload(
+    background_tasks: BackgroundTasks,
+    resume: UploadFile = File(..., description="Resume as PDF or plain text (.txt)"),
+    preferences: str = Form(default="", description="Job search preferences"),
+    run_pipeline: bool = Form(default=False),
+) -> dict[str, Any]:
+    """
+    Same as ``POST /start`` but accept an uploaded file instead of JSON ``resume_text``.
+
+    Supported: ``.pdf`` (text-based PDFs), ``.txt`` / ``.md``. Max size 5 MB.
+    """
+    data = await resume.read()
+    try:
+        text = extract_resume_text(resume.filename or "resume.pdf", data)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return await _run_start_flow(text, preferences, run_pipeline, background_tasks)
 
 
 @router.post("/run-pipeline")

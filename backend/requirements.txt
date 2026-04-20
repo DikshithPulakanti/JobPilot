@@ -10,6 +10,8 @@ langchain-anthropic
 psycopg2-binary
 python-dotenv
 pydantic
+pypdf
+pymupdf
 beautifulsoup4
 requests
 pytesseract

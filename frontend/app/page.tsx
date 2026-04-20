@@ -2,6 +2,7 @@ import { ApplicationTable } from "./components/ApplicationTable";
 import { DashboardMetrics } from "./components/DashboardMetrics";
 import { FitScoreChart } from "./components/FitScoreChart";
 import { LiveFeed } from "./components/LiveFeed";
+import { StartResumeForm } from "./components/StartResumeForm";
 
 export default function Home() {
   return (
@@ -16,6 +17,8 @@ export default function Home() {
       </header>
 
       <DashboardMetrics />
+
+      <StartResumeForm />
 
       <section className="grid gap-6 lg:grid-cols-2">
         <div className="min-h-[28rem]">
