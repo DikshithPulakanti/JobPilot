@@ -14,3 +14,4 @@ class AgentState(TypedDict, total=False):
     applications_run: list[dict[str, Any]]
     errors: list[str]
     stage: str
+    failed_nodes: list[str]

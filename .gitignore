@@ -8,4 +8,5 @@ venv/
 .next/
 out/
 backend/.tmp_venv/
+backend/resume.txt
 *.tsbuildinfo

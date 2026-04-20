@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from agents.fit_scorer import score_job_fit
 from agents.job_finder import find_jobs
+from orchestrator.retry_types import is_retryable_exception
 from orchestrator.state import AgentState
 from tracker import db as tracker_db
 
@@ -84,6 +85,8 @@ async def node_job_search(state: AgentState, publish: PublishFn) -> dict[str, An
         os.environ.setdefault("PLAYWRIGHT_HEADLESS", "true")
         jobs = await find_jobs(profile)
     except Exception as exc:  # noqa: BLE001
+        if is_retryable_exception(exc):
+            raise
         logger.exception("job_search failed: %s", exc)
         msg = str(exc)
         await publish(
@@ -134,6 +137,8 @@ async def node_scoring(state: AgentState, publish: PublishFn) -> dict[str, Any]:
         try:
             result = await score_job_fit(job, profile)
         except Exception as exc:  # noqa: BLE001
+            if is_retryable_exception(exc):
+                raise
             logger.warning("score failed for job %s: %s", job_id, exc)
             continue
 
@@ -219,6 +224,8 @@ async def node_applications(state: AgentState, publish: PublishFn) -> dict[str, 
                 }
             )
         except Exception as exc:  # noqa: BLE001
+            if is_retryable_exception(exc):
+                raise
             logger.exception("application_runner failed for job %s: %s", jid, exc)
             out.append({"job_id": jid, "ok": False, "error": str(exc)})
             await publish(
@@ -243,7 +250,11 @@ async def node_finalize(state: AgentState, publish: PublishFn) -> dict[str, Any]
                 "action": "pipeline_completed",
                 "company": None,
                 "title": None,
-                "details": {"ok": False, "errors": err},
+                "details": {
+                    "ok": False,
+                    "errors": err,
+                    "failed_nodes": state.get("failed_nodes") or [],
+                },
                 "status": "error",
             }
         )
@@ -259,6 +270,7 @@ async def node_finalize(state: AgentState, publish: PublishFn) -> dict[str, Any]
                 "jobs_found": len(state.get("jobs_found") or []),
                 "scoring": state.get("scoring_counts") or {},
                 "applications": len(state.get("applications_run") or []),
+                "failed_nodes": state.get("failed_nodes") or [],
             },
             "status": "success",
         }
